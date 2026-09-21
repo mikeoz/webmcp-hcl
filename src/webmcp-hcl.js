@@ -189,9 +189,9 @@
       }
     });
 
-    if (global.navigator && global.navigator.modelContext &&
-        typeof global.navigator.modelContext.registerTool === 'function') {
-      global.navigator.modelContext.registerTool(wrappedDef);
+    var mc = (global.document && global.document.modelContext) || (global.navigator && global.navigator.modelContext);
+    if (mc && typeof mc.registerTool === 'function') {
+      mc.registerTool(wrappedDef);
     }
 
     return wrappedDef;
