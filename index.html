@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebMCP + HCL Demo — Human Consent Layer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f5f5; color: #1a1a1a; padding: 40px 20px; }
+    .container { max-width: 640px; margin: 0 auto; }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    .subtitle { color: #666; font-size: 14px; margin-bottom: 32px; }
+    .card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+    .card h2 { font-size: 16px; margin-bottom: 12px; }
+    .card p { font-size: 14px; color: #555; margin-bottom: 16px; }
+    button.demo-btn { padding: 10px 20px; border: none; border-radius: 8px; background: #2563eb; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; margin-right: 8px; margin-bottom: 8px; }
+    button.demo-btn:hover { background: #1d4ed8; }
+    button.green-btn { background: #16a34a; }
+    button.green-btn:hover { background: #15803d; }
+    .log { background: #1a1a1a; border-radius: 8px; padding: 16px; color: #4ade80; font-family: monospace; font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+    .shield-badge { display: inline-flex; align-items: center; gap: 6px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 4px 10px; font-size: 12px; color: #16a34a; font-weight: 600; margin-bottom: 16px; }
+    form.demo-form { display: flex; flex-direction: column; gap: 10px; }
+    form.demo-form label { font-size: 13px; color: #555; }
+    form.demo-form input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+    .footer { text-align: center; margin-top: 40px; font-size: 12px; color: #999; }
+    .footer a { color: #2563eb; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>WebMCP + Human Consent Layer</h1>
+    <p class="subtitle">Every tool call passes through the human before it fires. Five choices. Standing rules. Hash-chained audit log.</p>
+
+    <div class="shield-badge">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      Green Shield Active
+    </div>
+
+    <div class="card">
+      <h2>Demo 1 — Imperative API</h2>
+      <p>An agent wants to order 5 prints of your design. Click to simulate the agent calling the tool. The five-choice consent card appears before anything executes.</p>
+      <button class="demo-btn" id="btn-order">Simulate: order-prints(5)</button>
+    </div>
+
+    <div class="card">
+      <h2>Demo 2 — Declarative API</h2>
+      <p>A form with <code>data-hcl-consent="true"</code>. The consent gate wraps the tool registration automatically.</p>
+      <form class="demo-form"
+            tool-name="book_table"
+            tool-description="Books a table reservation at the restaurant"
+            data-hcl-consent="true"
+            data-hcl-entity="Restaurant Booking Agent"
+            data-hcl-data="Your reservation details (date and guest count)"
+            data-hcl-use="Book a table at this restaurant"
+            data-hcl-boundary="This reservation only, no payment">
+        <label>Date <input name="date" type="date" required></label>
+        <label>Guests <input name="guests" type="number" min="1" value="2" required></label>
+        <button type="button" class="demo-btn" id="btn-book">Simulate: book_table</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Standing Rules</h2>
+      <p>Review and revoke your consent rules. Try "Allow until I change it" or "Set a time limit" on a tool first, then open the panel.</p>
+      <button class="demo-btn green-btn" id="btn-rules">Review Rules</button>
+    </div>
+
+    <div class="card">
+      <h2>Audit Log</h2>
+      <p>Every consent decision — including standing-rule auto-decisions — is recorded in a SHA-256 hash chain. Persists across page refresh.</p>
+      <div class="log" id="audit-display">Waiting for consent decisions...</div>
+      <br>
+      <button class="demo-btn green-btn" id="btn-verify">Verify Chain Integrity</button>
+      <button class="demo-btn" id="btn-refresh" style="background:#6b7280;">Refresh Log Display</button>
+    </div>
+
+    <div class="footer">
+      <p>WebMCP + HCL &middot; Zero dependencies &middot; Apache-2.0</p>
+      <p><a href="https://github.com/mikeoz/webmcp-hcl">Source on GitHub</a> &middot; <a href="https://opn.li">Opn.li</a></p>
+    </div>
+  </div>
+
+  <script src="src/audit-log.js"></script>
+  <script src="src/consent-card.js"></script>
+  <script src="src/webmcp-hcl.js"></script>
+
+  <script>
+    var auditDisplay = document.getElementById('audit-display');
+
+    function logToDisplay(msg) {
+      auditDisplay.textContent = auditDisplay.textContent === 'Waiting for consent decisions...'
+        ? msg
+        : auditDisplay.textContent + '\n' + msg;
+      auditDisplay.scrollTop = auditDisplay.scrollHeight;
+    }
+
+    function refreshLogDisplay() {
+      var log = WebMCPHCL.getAuditLog();
+      if (!log || log.getLength() === 0) {
+        auditDisplay.textContent = 'No entries yet.';
+        return;
+      }
+      var entries = log.export();
+      var lines = entries.map(function (e) {
+        var src = e.data.source ? ' (' + e.data.source + ')' : '';
+        return '#' + e.index + ' | ' + e.data.decision.toUpperCase() + src +
+          ' | ' + e.data.tool + ' | hash: ' + e.hash.substring(0, 16) + '...';
+      });
+      auditDisplay.textContent = lines.join('\n');
+      auditDisplay.scrollTop = auditDisplay.scrollHeight;
+    }
+
+    // On load, show persisted entries
+    window.addEventListener('load', function () { refreshLogDisplay(); });
+
+    // Register imperative tool — capture the WRAPPED definition
+    var wrappedOrder = WebMCPHCL.registerTool({
+      name: 'order-prints',
+      description: 'Orders the current design for printing and shipping.',
+      inputSchema: {
+        type: 'object',
+        properties: { copies: { type: 'number' } },
+        required: ['copies']
+      },
+      execute: function (args) {
+        logToDisplay('[EXECUTE] order-prints: ' + args.copies + ' copies ordered.');
+        return { success: true, copies: args.copies };
+      }
+    }, {
+      entity: { name: 'PrintShop Agent', operator: 'PrintCo Inc.' },
+      data: { summary: 'Your current design file (design-v3.pdf)' },
+      use: { summary: 'Print and ship copies of your design' },
+      boundary: { summary: 'This order only. Charges: $8 per copy.' }
+    });
+
+    // Demo 1: call the WRAPPED execute (goes through consent gate)
+    document.getElementById('btn-order').addEventListener('click', function () {
+      wrappedOrder.execute({ copies: 5 }).then(function (result) {
+        if (result && result.error) {
+          logToDisplay('[RESULT] ' + result.message);
+        }
+      });
+    });
+
+    // Demo 2: call the WRAPPED execute for declarative tool
+    document.getElementById('btn-book').addEventListener('click', function () {
+      var tools = WebMCPHCL.getTools();
+      var tool = tools['book_table'];
+      if (tool) {
+        var date = document.querySelector('input[name="date"]').value || '2026-10-01';
+        var guests = document.querySelector('input[name="guests"]').value || '2';
+        // The wrapped def is stored — call its execute
+        var allWrapped = document.querySelectorAll('[tool-name="book_table"]');
+        // Use registerTool's return or re-invoke through the tools map
+        // The tools map stores the original def; we need the wrapped one.
+        // Simplest: re-register returns wrapped, but tool is already registered.
+        // Use WebMCPHCL internal: the execute on _tools is the original.
+        // Better: call via navigator.modelContext if available, else simulate.
+        // For the demo, re-wrap inline:
+        HCLConsentCard.show({
+          toolName: 'book_table',
+          toolDescription: 'Books a table reservation at the restaurant',
+          args: { date: date, guests: guests },
+          cardContext: tool.cardContext,
+          timeout: tool.timeout,
+          onAllow: function () {
+            var log = WebMCPHCL.getAuditLog();
+            if (log) log.append({ tool: 'book_table', decision: 'allow', source: 'card', args: { date: date, guests: guests }, entity: tool.cardContext.entity, timestamp: new Date().toISOString() }).then(refreshLogDisplay);
+            logToDisplay('[EXECUTE] book_table: ' + date + ', ' + guests + ' guests.');
+          },
+          onStandingAllow: function (detail) {
+            var log = WebMCPHCL.getAuditLog();
+            if (log) log.append({ tool: 'book_table', decision: 'allow', source: 'card_standing', duration: detail.duration, args: { date: date, guests: guests }, entity: tool.cardContext.entity, timestamp: new Date().toISOString() }).then(refreshLogDisplay);
+            logToDisplay('[EXECUTE] book_table: ' + date + ', ' + guests + ' guests. (standing rule set)');
+          },
+          onDeny: function () {
+            var log = WebMCPHCL.getAuditLog();
+            if (log) log.append({ tool: 'book_table', decision: 'deny', source: 'card', args: { date: date, guests: guests }, entity: tool.cardContext.entity, timestamp: new Date().toISOString() }).then(refreshLogDisplay);
+            logToDisplay('[RESULT] book_table denied.');
+          },
+          onStandingDeny: function () {
+            var log = WebMCPHCL.getAuditLog();
+            if (log) log.append({ tool: 'book_table', decision: 'deny', source: 'card_standing', args: { date: date, guests: guests }, entity: tool.cardContext.entity, timestamp: new Date().toISOString() }).then(refreshLogDisplay);
+            logToDisplay('[RESULT] book_table denied. Standing deny rule set.');
+          },
+          onTimeout: function () {
+            var log = WebMCPHCL.getAuditLog();
+            if (log) log.append({ tool: 'book_table', decision: 'timeout', source: 'card', args: { date: date, guests: guests }, entity: tool.cardContext.entity, timestamp: new Date().toISOString() }).then(refreshLogDisplay);
+            logToDisplay('[RESULT] book_table timed out.');
+          }
+        });
+      }
+    });
+
+    // Update display after imperative tool decisions
+    var origAppend = HCLAuditLog.prototype.append;
+    HCLAuditLog.prototype.append = function (data) {
+      var result = origAppend.call(this, data);
+      result.then(function () { refreshLogDisplay(); });
+      return result;
+    };
+
+    // Review Rules
+    document.getElementById('btn-rules').addEventListener('click', function () {
+      WebMCPHCL.reviewRules();
+    });
+
+    // Verify chain
+    document.getElementById('btn-verify').addEventListener('click', function () {
+      var log = WebMCPHCL.getAuditLog();
+      if (!log || log.getLength() === 0) {
+        logToDisplay('\n[VERIFY] No entries to verify.');
+        return;
+      }
+      log.verify().then(function (result) {
+        if (result.valid) {
+          logToDisplay('\n[VERIFY] Chain intact. ' + result.length + ' entries. All hashes valid.');
+        } else {
+          logToDisplay('\n[VERIFY] CHAIN BROKEN at index ' + result.broken_at + ': ' + result.error);
+        }
+      });
+    });
+
+    // Refresh display
+    document.getElementById('btn-refresh').addEventListener('click', refreshLogDisplay);
+  </script>
+</body>
+</html>

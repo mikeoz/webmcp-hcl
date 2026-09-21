@@ -2,7 +2,8 @@
  * WebMCP + Human Consent Layer
  *
  * Wraps WebMCP tool registrations with HCL consent gates.
- * The tool does not execute until the human approves.
+ * The tool does not execute until the human approves — unless a
+ * standing rule exists for that tool (checked first, logged always).
  *
  * Zero dependencies. Pure browser JavaScript.
  *
@@ -13,13 +14,10 @@
 (function (global) {
   'use strict';
 
-  const WebMCPHCL = {};
+  var WebMCPHCL = {};
 
-  // Internal registry of wrapped tools
-  const _tools = {};
-
-  // Audit log instance (created on first use)
-  let _auditLog = null;
+  var _tools = {};
+  var _auditLog = null;
 
   function getAuditLog() {
     if (!_auditLog && global.HCLAuditLog) {
@@ -31,19 +29,10 @@
   /**
    * Register a WebMCP tool with an HCL consent gate.
    *
-   * The tool is registered with the browser's WebMCP API normally
-   * so agents can discover it. When invoked, execution is intercepted
-   * and a consent card is shown to the human before proceeding.
-   *
    * @param {object} toolDef - Standard WebMCP tool definition
-   *   (name, description, inputSchema, execute)
    * @param {object} cardContext - HCL CARD context for the consent card
-   * @param {object} cardContext.entity - Entity CARD summary
-   * @param {object} cardContext.data - Data CARD summary
-   * @param {object} cardContext.use - Use CARD summary
-   * @param {object} cardContext.boundary - Boundary CARD summary
    * @param {object} [options]
-   * @param {number} [options.timeout=30000] - Consent timeout in ms (default 30s)
+   * @param {number} [options.timeout=30000] - Consent timeout in ms
    */
   WebMCPHCL.registerTool = function (toolDef, cardContext, options) {
     if (!toolDef || !toolDef.name || !toolDef.execute) {
@@ -53,55 +42,101 @@
       throw new Error('WebMCPHCL.registerTool requires cardContext (entity, data, use, boundary)');
     }
 
-    const opts = options || {};
-    const timeout = opts.timeout || 30000;
-    const originalExecute = toolDef.execute;
+    var opts = options || {};
+    var timeout = opts.timeout || 30000;
+    var originalExecute = toolDef.execute;
 
-    // Store the tool context for reference
     _tools[toolDef.name] = {
       def: toolDef,
       cardContext: cardContext,
       timeout: timeout
     };
 
-    // Create the wrapped tool definition
-    const wrappedDef = Object.assign({}, toolDef, {
+    var wrappedDef = Object.assign({}, toolDef, {
       execute: function (args) {
         return new Promise(function (resolve, reject) {
-          // Show consent card and wait for decision
-          var card = global.HCLConsentCard.show({
+
+          // Check standing rules first
+          var rule = global.HCLConsentCard.checkRule(toolDef.name);
+          if (rule) {
+            var log = getAuditLog();
+            if (log) {
+              log.append({
+                tool: toolDef.name,
+                decision: rule.decision,
+                source: 'standing_rule',
+                args: args,
+                entity: cardContext.entity,
+                timestamp: new Date().toISOString()
+              });
+            }
+            if (rule.decision === 'allow') {
+              try {
+                resolve(originalExecute(args));
+              } catch (err) {
+                reject(err);
+              }
+            } else {
+              resolve({
+                error: 'consent_denied',
+                message: 'Blocked by standing rule.',
+                tool: toolDef.name
+              });
+            }
+            return;
+          }
+
+          // No standing rule — show the consent card
+          global.HCLConsentCard.show({
             toolName: toolDef.name,
             toolDescription: toolDef.description,
             args: args,
             cardContext: cardContext,
             timeout: timeout,
             onAllow: function () {
-              // Log the Allow decision
               var log = getAuditLog();
               if (log) {
                 log.append({
                   tool: toolDef.name,
                   decision: 'allow',
+                  source: 'card',
                   args: args,
                   entity: cardContext.entity,
                   timestamp: new Date().toISOString()
                 });
               }
-              // Execute the original function
               try {
-                var result = originalExecute(args);
-                resolve(result);
+                resolve(originalExecute(args));
+              } catch (err) {
+                reject(err);
+              }
+            },
+            onStandingAllow: function (detail) {
+              var log = getAuditLog();
+              if (log) {
+                log.append({
+                  tool: toolDef.name,
+                  decision: 'allow',
+                  source: 'card_standing',
+                  duration: detail.duration,
+                  args: args,
+                  entity: cardContext.entity,
+                  timestamp: new Date().toISOString()
+                });
+              }
+              try {
+                resolve(originalExecute(args));
               } catch (err) {
                 reject(err);
               }
             },
             onDeny: function () {
-              // Log the Deny decision
               var log = getAuditLog();
               if (log) {
                 log.append({
                   tool: toolDef.name,
                   decision: 'deny',
+                  source: 'card',
                   args: args,
                   entity: cardContext.entity,
                   timestamp: new Date().toISOString()
@@ -113,13 +148,31 @@
                 tool: toolDef.name
               });
             },
+            onStandingDeny: function () {
+              var log = getAuditLog();
+              if (log) {
+                log.append({
+                  tool: toolDef.name,
+                  decision: 'deny',
+                  source: 'card_standing',
+                  args: args,
+                  entity: cardContext.entity,
+                  timestamp: new Date().toISOString()
+                });
+              }
+              resolve({
+                error: 'consent_denied',
+                message: 'Blocked. Standing deny rule set.',
+                tool: toolDef.name
+              });
+            },
             onTimeout: function () {
-              // INV-FC: fail-closed on timeout
               var log = getAuditLog();
               if (log) {
                 log.append({
                   tool: toolDef.name,
                   decision: 'timeout',
+                  source: 'card',
                   args: args,
                   entity: cardContext.entity,
                   timestamp: new Date().toISOString()
@@ -136,7 +189,6 @@
       }
     });
 
-    // Register with the browser's WebMCP API if available
     if (global.navigator && global.navigator.modelContext &&
         typeof global.navigator.modelContext.registerTool === 'function') {
       global.navigator.modelContext.registerTool(wrappedDef);
@@ -146,10 +198,7 @@
   };
 
   /**
-   * Auto-scan the DOM for forms with data-hcl-consent="true"
-   * and wrap their WebMCP tool registrations with consent gates.
-   *
-   * Call this after the DOM is loaded.
+   * Auto-scan the DOM for forms with data-hcl-consent="true".
    */
   WebMCPHCL.scanDeclarative = function () {
     var forms = document.querySelectorAll('form[data-hcl-consent="true"]');
@@ -166,7 +215,6 @@
         boundary: { summary: form.getAttribute('data-hcl-boundary') || 'This action only' }
       };
 
-      // Build input schema from form fields
       var inputs = form.querySelectorAll('input[name], select[name], textarea[name]');
       var properties = {};
       var required = [];
@@ -192,7 +240,6 @@
             required: req
           },
           execute: function (args) {
-            // Fill and submit the form
             for (var key in args) {
               var el = f.querySelector('[name="' + key + '"]');
               if (el) el.value = args[key];
@@ -207,7 +254,7 @@
 
   /**
    * Get all registered tools and their CARD contexts.
-   * @returns {object} Map of tool name to { def, cardContext }
+   * @returns {object}
    */
   WebMCPHCL.getTools = function () {
     return Object.assign({}, _tools);
@@ -221,7 +268,13 @@
     return getAuditLog();
   };
 
-  // Auto-scan on DOMContentLoaded
+  /**
+   * Open the standing rules review panel.
+   */
+  WebMCPHCL.reviewRules = function () {
+    global.HCLConsentCard.showReviewPanel();
+  };
+
   if (typeof document !== 'undefined') {
     document.addEventListener('DOMContentLoaded', function () {
       WebMCPHCL.scanDeclarative();

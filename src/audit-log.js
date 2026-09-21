@@ -3,6 +3,7 @@
  *
  * Records consent decisions in a tamper-evident chain per INV-TE.
  * Uses the Web Crypto API (SubtleCrypto) for SHA-256 — no dependencies.
+ * Chain persists to localStorage and survives page refresh.
  *
  * @license Apache-2.0
  * @copyright Opnli Corporation
@@ -11,9 +12,10 @@
 (function (global) {
   'use strict';
 
+  var STORAGE_KEY = 'hcl-audit-chain';
+
   /**
    * SHA-256 hex digest using Web Crypto API.
-   * Falls back to a simple hash if SubtleCrypto is unavailable.
    *
    * @param {string} input
    * @returns {Promise<string>} 64-character hex hash
@@ -26,14 +28,44 @@
       var array = Array.from(new Uint8Array(buffer));
       return array.map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
     }
-    // Fallback: should not happen in modern browsers
     throw new Error('SubtleCrypto not available — cannot compute SHA-256');
   }
 
   function HCLAuditLog() {
     this.entries = [];
     this._ready = Promise.resolve();
+    this._loadFromStorage();
   }
+
+  /**
+   * Load chain from localStorage if present.
+   * Silent on failure — a missing or corrupt store starts a fresh chain.
+   */
+  HCLAuditLog.prototype._loadFromStorage = function () {
+    try {
+      var raw = global.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          this.entries = parsed;
+        }
+      }
+    } catch (_) {
+      /* localStorage unavailable or corrupt — start fresh */
+    }
+  };
+
+  /**
+   * Persist the current chain to localStorage.
+   * Silent on failure — the in-memory chain remains authoritative.
+   */
+  HCLAuditLog.prototype._saveToStorage = function () {
+    try {
+      global.localStorage.setItem(STORAGE_KEY, JSON.stringify(this.entries));
+    } catch (_) {
+      /* localStorage full or unavailable — chain lives in memory */
+    }
+  };
 
   /**
    * Append a consent decision to the chain.
@@ -44,7 +76,6 @@
   HCLAuditLog.prototype.append = function (data) {
     var self = this;
 
-    // Chain appends sequentially to ensure hash ordering
     self._ready = self._ready.then(function () {
       var index = self.entries.length;
       var previousHash = index === 0
@@ -62,6 +93,7 @@
           hash: hash
         };
         self.entries.push(entry);
+        self._saveToStorage();
         return entry;
       });
     });
@@ -87,7 +119,7 @@
     for (var i = 0; i < self.entries.length; i++) {
       (function (idx) {
         chain = chain.then(function () {
-          if (!result.valid) return; // already found a break
+          if (!result.valid) return;
 
           var entry = self.entries[idx];
           var expectedPrev = idx === 0
