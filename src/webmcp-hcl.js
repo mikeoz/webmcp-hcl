@@ -275,6 +275,168 @@
     global.HCLConsentCard.showReviewPanel();
   };
 
+  /**
+   * Test a registered tool by simulating an agent call.
+   * Fires the full Green Shield consent flow — standing rules,
+   * consent card, audit chain — identical to an agent-initiated call.
+   *
+   * @param {string} toolName - Name of a previously registered tool
+   * @param {object} [args={}] - Arguments to pass to the tool
+   * @returns {Promise<object>} Tool result or denial object
+   */
+  WebMCPHCL.testTool = function (toolName, args) {
+    var entry = _tools[toolName];
+    if (!entry) {
+      return Promise.reject(new Error("testTool: no tool registered with name '" + toolName + "'"));
+    }
+
+    var toolDef = entry.def;
+    var cardContext = entry.cardContext;
+    var timeout = entry.timeout;
+    var originalExecute = toolDef.execute;
+    args = args || {};
+
+    return new Promise(function (resolve, reject) {
+
+      // Check standing rules first (same as agent path)
+      var rule = global.HCLConsentCard.checkRule(toolName);
+      if (rule) {
+        var log = getAuditLog();
+        if (log) {
+          log.append({
+            tool: toolName,
+            decision: rule.decision,
+            source: 'standing_rule',
+            trigger: 'testTool',
+            args: args,
+            entity: cardContext.entity,
+            timestamp: new Date().toISOString()
+          });
+        }
+        if (rule.decision === 'allow') {
+          try {
+            resolve(originalExecute(args));
+          } catch (err) {
+            reject(err);
+          }
+        } else {
+          resolve({
+            error: 'consent_denied',
+            message: 'Blocked by standing rule.',
+            tool: toolName
+          });
+        }
+        return;
+      }
+
+      // No standing rule — show the consent card (same as agent path)
+      global.HCLConsentCard.show({
+        toolName: toolName,
+        toolDescription: toolDef.description,
+        args: args,
+        cardContext: cardContext,
+        timeout: timeout,
+        onAllow: function () {
+          var log = getAuditLog();
+          if (log) {
+            log.append({
+              tool: toolName,
+              decision: 'allow',
+              source: 'card',
+              trigger: 'testTool',
+              args: args,
+              entity: cardContext.entity,
+              timestamp: new Date().toISOString()
+            });
+          }
+          try {
+            resolve(originalExecute(args));
+          } catch (err) {
+            reject(err);
+          }
+        },
+        onStandingAllow: function (detail) {
+          var log = getAuditLog();
+          if (log) {
+            log.append({
+              tool: toolName,
+              decision: 'allow',
+              source: 'card_standing',
+              trigger: 'testTool',
+              duration: detail.duration,
+              args: args,
+              entity: cardContext.entity,
+              timestamp: new Date().toISOString()
+            });
+          }
+          try {
+            resolve(originalExecute(args));
+          } catch (err) {
+            reject(err);
+          }
+        },
+        onDeny: function () {
+          var log = getAuditLog();
+          if (log) {
+            log.append({
+              tool: toolName,
+              decision: 'deny',
+              source: 'card',
+              trigger: 'testTool',
+              args: args,
+              entity: cardContext.entity,
+              timestamp: new Date().toISOString()
+            });
+          }
+          resolve({
+            error: 'consent_denied',
+            message: 'The user denied this action.',
+            tool: toolName
+          });
+        },
+        onStandingDeny: function () {
+          var log = getAuditLog();
+          if (log) {
+            log.append({
+              tool: toolName,
+              decision: 'deny',
+              source: 'card_standing',
+              trigger: 'testTool',
+              args: args,
+              entity: cardContext.entity,
+              timestamp: new Date().toISOString()
+            });
+          }
+          resolve({
+            error: 'consent_denied',
+            message: 'Blocked. Standing deny rule set.',
+            tool: toolName
+          });
+        },
+        onTimeout: function () {
+          var log = getAuditLog();
+          if (log) {
+            log.append({
+              tool: toolName,
+              decision: 'timeout',
+              source: 'card',
+              trigger: 'testTool',
+              args: args,
+              entity: cardContext.entity,
+              timestamp: new Date().toISOString()
+            });
+          }
+          resolve({
+            error: 'consent_timeout',
+            message: 'Consent timed out. Action denied.',
+            tool: toolName
+          });
+        }
+      });
+    });
+  };
+
+
   if (typeof document !== 'undefined') {
     document.addEventListener('DOMContentLoaded', function () {
       WebMCPHCL.scanDeclarative();
